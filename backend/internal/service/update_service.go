@@ -30,7 +30,9 @@ var (
 const (
 	updateCacheKey = "update_check_cache"
 	updateCacheTTL = 1200 // 20 minutes
-	githubRepo     = "Wei-Shaw/sub2api"
+	// This deployment tracks the AcosX fork (upstream v-prefixed releases plus
+	// fork-specific `-acosx.N` builds carrying pre-merged upstream PRs).
+	githubRepo = "AcosX/sub2api"
 
 	// Security: allowed download domains for updates
 	allowedDownloadHost = "github.com"
@@ -638,6 +640,31 @@ func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
 }
 
 // compareVersions compares two semantic versions
+// forkBuildNumber returns the fork iteration suffix (e.g. 2 for "0.2.23-acosx.2"),
+// or 0 for pure upstream versions. The plain numeric comparison ignores prerelease
+// suffixes, so two fork builds over the same upstream base would otherwise compare
+// equal and hide in-app updates; the build number restores ordering within a base.
+func forkBuildNumber(v string) int {
+	v = strings.TrimPrefix(v, "v")
+	idx := strings.IndexByte(v, '-')
+	if idx == -1 {
+		return 0
+	}
+	suffix := v[idx+1:]
+	const marker = "acosx."
+	if !strings.HasPrefix(suffix, marker) {
+		return 0
+	}
+	build, err := strconv.Atoi(suffix[len(marker):])
+	if err != nil || build < 0 {
+		return 0
+	}
+	return build
+}
+
+// compareVersions orders by (major, minor, patch, fork build number). Pure
+// upstream versions sort below fork builds on the same base, so an installed
+// fork build is never "downgraded" to the equivalent upstream release.
 func compareVersions(current, latest string) int {
 	currentParts := parseVersion(current)
 	latestParts := parseVersion(latest)
@@ -649,6 +676,14 @@ func compareVersions(current, latest string) int {
 		if currentParts[i] > latestParts[i] {
 			return 1
 		}
+	}
+	currentFork := forkBuildNumber(current)
+	latestFork := forkBuildNumber(latest)
+	if currentFork < latestFork {
+		return -1
+	}
+	if currentFork > latestFork {
+		return 1
 	}
 	return 0
 }

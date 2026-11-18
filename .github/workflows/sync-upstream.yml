@@ -1,8 +1,10 @@
 name: Sync Upstream
 
-# Keeps this fork's main tracking Wei-Shaw/sub2api@main, and mirrors upstream
-# v* release tags so the fork's existing Release workflow publishes installable
-# artifacts. Installs from this fork therefore follow upstream automatically.
+# Keeps this fork's main tracking Wei-Shaw/sub2api@main, then publishes fork
+# releases tagged v<upstream-base>-acosx.N that carry the fork-only commits
+# (pre-merged upstream PRs such as Wei-Shaw/sub2api#8608). The fork's Release
+# workflow builds those tags, so installs and in-app updates follow the fork
+# while automatically picking up every new upstream release.
 
 on:
   schedule:
@@ -61,7 +63,11 @@ jobs:
         if: steps.merge.outputs.up_to_date != 'true'
         run: git push origin main
 
-      - name: Set up deploy key for tag mirroring
+      # Releasing: when upstream cuts a new vX.Y.Z release that main does not
+      # cover yet, tag the fork build as vX.Y.Z-acosx.N (N increments per base).
+      # A GITHUB_TOKEN push cannot trigger workflows, so tags go through a
+      # read-write deploy key whose push events start the Release workflow.
+      - name: Set up deploy key for release tagging
         env:
           DEPLOY_KEY: ${{ secrets.SYNC_DEPLOY_KEY }}
         run: |
@@ -73,39 +79,60 @@ jobs:
           GIT_SSH_COMMAND='ssh -i $HOME/.ssh/sync_deploy_key -o IdentitiesOnly=yes' \
             git remote add deploy git@github.com:AcosX/sub2api.git || true
 
-      - name: Mirror new upstream release tags
-        id: tags
+      - name: Tag fork release for new upstream versions
+        id: release_tags
         run: |
           set -euo pipefail
           origin_tags=$(git ls-remote --tags origin 'refs/tags/v*' | awk -F 'refs/tags/' '{print $2}' | sed 's/\^{}$//' | sort -u)
-          upstream_tags=$(git tag --list 'v*')
+          upstream_tags=$(git tag --list 'v*' | grep -v -- '-acosx' | sort -u)
           if [ -z "$upstream_tags" ]; then
             echo "No upstream v* tags found." >> "$GITHUB_STEP_SUMMARY"
             echo "pushed=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ -z "$origin_tags" ]; then
-            # First mirror run: take only the newest upstream tag so the fork's
-            # Release workflow is not stampeded with historical builds.
-            to_push=$(printf '%s\n' "$upstream_tags" | sort -u -V | tail -n 1)
-          else
-            to_push=$(comm -13 <(printf '%s\n' "$origin_tags" | sed '/^$/d' | sort) <(printf '%s\n' "$upstream_tags" | sed '/^$/d' | sort))
-          fi
-          to_push=$(printf '%s\n' "$to_push" | sed '/^$/d')
-          if [ -z "$to_push" ]; then
-            echo "No new upstream tags to mirror." >> "$GITHUB_STEP_SUMMARY"
+
+          # Base versions upstream has already released but fork has not yet built.
+          fork_bases=$(printf '%s\n' "$origin_tags" | sed -n 's/^\(v[0-9]*\.[0-9]*\.[0-9]*\)-acosx.*/\1/p' | sort -u)
+          to_tag=$(comm -13 <(printf '%s\n' "$fork_bases" | sed '/^$/d' | sort) <(printf '%s\n' "$upstream_tags" | sed '/^$/d' | sort))
+
+          # Only tag a base if fork main actually contains its release commit, so a
+          # just-pushed upstream tag never races ahead of the merge above.
+          tag_list=""
+          while IFS= read -r base; do
+            [ -n "$base" ] || continue
+            sha=$(git rev-parse --verify --quiet "refs/tags/$base^{}" || git rev-parse --verify --quiet "refs/tags/$base") || continue
+            if git merge-base --is-ancestor "$sha" HEAD; then
+              tag_list="${tag_list}${base}
+"
+            else
+              echo "$base is not contained in fork main yet; skipping this round." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done <<< "$to_tag"
+
+          if [ -z "$tag_list" ]; then
+            echo "No new upstream releases to fork-tag." >> "$GITHUB_STEP_SUMMARY"
             echo "pushed=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
           {
-            echo "Mirroring upstream release tags:"
+            echo "Fork releases to publish:"
             echo
-            printf '%s\n' "$to_push" | sed 's/^/- `/' | sed 's/$/`/'
+            printf '%s\n' "$tag_list" | sed 's/^/- `/'
           } >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' "$to_push" > "$RUNNER_TEMP/mirrored-tags.txt"
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
+
+          pushed=0
+          while IFS= read -r base; do
+            [ -n "$base" ] || continue
+            n=$(printf '%s\n' "$origin_tags" | grep -c "^${base}-acosx\." || true)
+            fork_tag="${base}-acosx.$((n + 1))"
+            git tag -a "$fork_tag" -m "Fork release: upstream ${base} + fork patches (AcosX/sub2api)
+
+            Tracks upstream ${base} with fork-only commits pre-merged (e.g. PR
+            Wei-Shaw/sub2api#8608). Later upstream releases supersede this one."
             GIT_SSH_COMMAND="ssh -i $HOME/.ssh/sync_deploy_key -o IdentitiesOnly=yes" \
-            git push deploy "refs/tags/$tag:refs/tags/$tag"
-          done < "$RUNNER_TEMP/mirrored-tags.txt"
-          echo "pushed=$(grep -c . "$RUNNER_TEMP/mirrored-tags.txt")" >> "$GITHUB_OUTPUT"
+              git push deploy "refs/tags/$fork_tag:refs/tags/$fork_tag"
+            echo "Tagged $fork_tag" >> "$GITHUB_STEP_SUMMARY"
+            pushed=$((pushed + 1))
+          done <<< "$tag_list"
+          echo "pushed=$pushed" >> "$GITHUB_OUTPUT"
