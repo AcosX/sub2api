@@ -1,0 +1,112 @@
+name: Sync Upstream
+
+# Keeps this fork's main tracking Wei-Shaw/sub2api@main, and mirrors upstream
+# v* release tags so the fork's existing Release workflow publishes installable
+# artifacts. Installs from this fork therefore follow upstream automatically.
+
+on:
+  schedule:
+    - cron: '37 */6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout fork main (full history)
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream main and release tags
+        run: |
+          git remote add upstream https://github.com/Wei-Shaw/sub2api.git
+          git fetch upstream main
+          git fetch upstream 'refs/tags/v*:refs/tags/v*' --no-tags
+
+      - name: Merge upstream/main into main
+        id: merge
+        run: |
+          set -euo pipefail
+          behind=$(git rev-list --count main..upstream/main)
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          if [ "$behind" -eq 0 ]; then
+            echo "main is already up to date with upstream/main" >> "$GITHUB_STEP_SUMMARY"
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+          if git merge --ff-only upstream/main 2>/dev/null; then
+            echo "Fast-forwarded main by $behind commit(s) from upstream/main." >> "$GITHUB_STEP_SUMMARY"
+          else
+            git merge --no-ff --no-edit upstream/main
+            echo "main diverged from upstream: created a merge commit absorbing $behind upstream commit(s)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Push main
+        if: steps.merge.outputs.up_to_date != 'true'
+        run: git push origin main
+
+      - name: Mirror new upstream release tags
+        id: tags
+        run: |
+          set -euo pipefail
+          origin_tags=$(git ls-remote --tags origin 'refs/tags/v*' | awk -F 'refs/tags/' '{print $2}' | sed 's/\^{}$//' | sort -u)
+          upstream_tags=$(git tag --list 'v*')
+          if [ -z "$upstream_tags" ]; then
+            echo "No upstream v* tags found." >> "$GITHUB_STEP_SUMMARY"
+            echo "pushed=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$origin_tags" ]; then
+            # First mirror run: take only the newest upstream tag so the fork's
+            # Release workflow is not stampeded with historical builds.
+            to_push=$(printf '%s\n' "$upstream_tags" | sort -u -V | tail -n 1)
+          else
+            to_push=$(comm -13 <(printf '%s\n' "$origin_tags" | sed '/^$/d' | sort) <(printf '%s\n' "$upstream_tags" | sed '/^$/d' | sort))
+          fi
+          to_push=$(printf '%s\n' "$to_push" | sed '/^$/d')
+          if [ -z "$to_push" ]; then
+            echo "No new upstream tags to mirror." >> "$GITHUB_STEP_SUMMARY"
+            echo "pushed=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "Mirroring upstream release tags:"
+            echo
+            printf '%s\n' "$to_push" | sed 's/^/- `/' | sed 's/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$to_push" > "$RUNNER_TEMP/mirrored-tags.txt"
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            git push origin "refs/tags/$tag:refs/tags/$tag"
+          done < "$RUNNER_TEMP/mirrored-tags.txt"
+          echo "pushed=$(grep -c . "$RUNNER_TEMP/mirrored-tags.txt")" >> "$GITHUB_OUTPUT"
+
+      # A GITHUB_TOKEN push does not trigger other workflows, so explicitly ask
+      # the existing Release workflow to build each mirrored tag.
+      - name: Dispatch Release workflow for mirrored tags
+        if: steps.tags.outputs.pushed != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/dispatches" -f ref="$tag" -f tag="$tag" > /dev/null
+            echo "Dispatched Release for $tag" >> "$GITHUB_STEP_SUMMARY"
+          done < "$RUNNER_TEMP/mirrored-tags.txt"
