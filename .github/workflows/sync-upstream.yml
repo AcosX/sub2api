@@ -61,6 +61,18 @@ jobs:
         if: steps.merge.outputs.up_to_date != 'true'
         run: git push origin main
 
+      - name: Set up deploy key for tag mirroring
+        env:
+          DEPLOY_KEY: ${{ secrets.SYNC_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p /root/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > /root/.ssh/sync_deploy_key
+          chmod 600 /root/.ssh/sync_deploy_key
+          ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND='ssh -i /root/.ssh/sync_deploy_key -o IdentitiesOnly=yes' \
+            git remote add deploy git@github.com:AcosX/sub2api.git || true
+
       - name: Mirror new upstream release tags
         id: tags
         run: |
@@ -93,20 +105,7 @@ jobs:
           printf '%s\n' "$to_push" > "$RUNNER_TEMP/mirrored-tags.txt"
           while IFS= read -r tag; do
             [ -n "$tag" ] || continue
-            git push origin "refs/tags/$tag:refs/tags/$tag"
+            GIT_SSH_COMMAND="ssh -i /root/.ssh/sync_deploy_key -o IdentitiesOnly=yes" \
+            git push deploy "refs/tags/$tag:refs/tags/$tag"
           done < "$RUNNER_TEMP/mirrored-tags.txt"
           echo "pushed=$(grep -c . "$RUNNER_TEMP/mirrored-tags.txt")" >> "$GITHUB_OUTPUT"
-
-      # A GITHUB_TOKEN push does not trigger other workflows, so explicitly ask
-      # the existing Release workflow to build each mirrored tag.
-      - name: Dispatch Release workflow for mirrored tags
-        if: steps.tags.outputs.pushed != '0'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-            gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/dispatches" -f ref="$tag" -f tag="$tag" > /dev/null
-            echo "Dispatched Release for $tag" >> "$GITHUB_STEP_SUMMARY"
-          done < "$RUNNER_TEMP/mirrored-tags.txt"
