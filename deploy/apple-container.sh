@@ -402,8 +402,14 @@ validate_env_file_security() {
     local owner mode permissions
 
     [[ -f "${ENV_FILE}" ]] || die "Environment file not found: ${ENV_FILE}. Run '$0 init' first."
-    owner="$(stat -f '%u' "${ENV_FILE}")" || die "Unable to read owner for ${ENV_FILE}."
-    mode="$(stat -f '%Lp' "${ENV_FILE}")" || die "Unable to read permissions for ${ENV_FILE}."
+    # BSD stat (macOS) uses -f; GNU stat (Linux) uses -c.
+    if stat -f '%u' "${ENV_FILE}" >/dev/null 2>&1; then
+        owner="$(stat -f '%u' "${ENV_FILE}")" || die "Unable to read owner for ${ENV_FILE}."
+        mode="$(stat -f '%Lp' "${ENV_FILE}")" || die "Unable to read permissions for ${ENV_FILE}."
+    else
+        owner="$(stat -c '%u' "${ENV_FILE}")" || die "Unable to read owner for ${ENV_FILE}."
+        mode="$(stat -c '%a' "${ENV_FILE}")" || die "Unable to read permissions for ${ENV_FILE}."
+    fi
     [[ "${owner}" == "${EUID}" ]] || die "Environment file must be owned by the current user: ${ENV_FILE}"
     [[ "${mode}" =~ ^[0-7]+$ ]] || die "Unable to parse permissions for ${ENV_FILE}: ${mode}"
     permissions=$((8#${mode}))

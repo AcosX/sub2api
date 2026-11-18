@@ -34,7 +34,15 @@ export SUB2API_ENV_FILE="${ENV_FILE}"
 mkdir -p "${STATE_DIR}"
 
 "${SCRIPT}" init
-[[ "$(stat -f '%Lp' "${ENV_FILE}")" == "600" ]] || fail "init did not create a mode-600 env file"
+# GNU stat (Linux) has no -f; BSD stat (macOS) requires -f. Use whichever works.
+file_mode() {
+    if stat -f '%Lp' "${1}" >/dev/null 2>&1; then
+        stat -f '%Lp' "${1}"
+    else
+        stat -c '%a' "${1}"
+    fi
+}
+[[ "$(file_mode "${ENV_FILE}")" == "600" ]] || fail "init did not create a mode-600 env file"
 grep -q '^POSTGRES_PASSWORD=change_this_secure_password$' "${ENV_FILE}" && fail "init retained the placeholder password"
 
 chmod 644 "${ENV_FILE}"
