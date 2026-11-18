@@ -1,0 +1,42 @@
+#!/bin/bash
+# Fake plutil for CI. macOS plutil converts container CLI plist output and
+# extracts keypaths: `plutil -extract <path> <json|raw> -o - -`. The fixture
+# `container` emits JSON, so emulate -extract on JSON. With a dict root,
+# plutil treats the document as the implicit "0" plist element.
+
+set -eu
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp"
+
+python3 - "$@" "$tmp" <<'PY'
+import json, sys
+
+args = sys.argv[1:]
+tmp = args.pop()
+path = ""
+mode = ""
+i = 0
+while i < len(args):
+    a = args[i]
+    if a == "-extract":
+        path = args[i + 1]
+        i += 2
+    elif a in ("json", "raw"):
+        mode = a
+        i += 1
+    else:
+        i += 1
+
+data = json.load(open(tmp))
+node = data
+for part in path.split('.'):
+    if isinstance(node, list):
+        node = node[int(part)]
+    elif isinstance(node, dict) and part.isdigit() and len(node) == 1:
+        node = next(iter(node.values()))
+    else:
+        node = node[part]
+print(node if mode == "raw" else json.dumps(node))
+PY
