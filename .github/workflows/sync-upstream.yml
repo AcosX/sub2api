@@ -92,8 +92,15 @@ jobs:
           fi
 
           # Base versions upstream has already released but fork has not yet built.
-          fork_bases=$(printf '%s\n' "$origin_tags" | sed -n 's/^\(v[0-9]*\.[0-9]*\.[0-9]*\)-acosx.*/\1/p' | sort -u)
-          to_tag=$(comm -13 <(printf '%s\n' "$fork_bases" | sed '/^$/d' | sort) <(printf '%s\n' "$upstream_tags" | sed '/^$/d' | sort))
+          # Only bases strictly newer than the newest fork release base are
+          # candidates; with no fork releases yet, take just the newest
+          # upstream base so history is not stampeded with rebuilds.
+          newest_fork_base=$(printf '%s\n' "$origin_tags" | sed -n 's/^\(v[0-9]*\.[0-9]*\.[0-9]*\)-acosx.*/\1/p' | sort -uV | tail -n 1)
+          if [ -z "$newest_fork_base" ]; then
+            to_tag=$(printf '%s\n' "$upstream_tags" | sort -uV | tail -n 1)
+          else
+            to_tag=$(printf '%s\n' "$upstream_tags" | sort -uV | awk -v m="$newest_fork_base" 'f {print} $0==m {f=1}')
+          fi
 
           # Only tag a base if fork main actually contains its release commit, so a
           # just-pushed upstream tag never races ahead of the merge above.
