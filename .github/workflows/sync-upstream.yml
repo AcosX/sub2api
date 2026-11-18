@@ -66,11 +66,11 @@ jobs:
           DEPLOY_KEY: ${{ secrets.SYNC_DEPLOY_KEY }}
         run: |
           set -euo pipefail
-          mkdir -p /root/.ssh
-          printf '%s\n' "$DEPLOY_KEY" > /root/.ssh/sync_deploy_key
-          chmod 600 /root/.ssh/sync_deploy_key
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > $HOME/.ssh/sync_deploy_key
+          chmod 600 $HOME/.ssh/sync_deploy_key
           ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null
-          GIT_SSH_COMMAND='ssh -i /root/.ssh/sync_deploy_key -o IdentitiesOnly=yes' \
+          GIT_SSH_COMMAND='ssh -i $HOME/.ssh/sync_deploy_key -o IdentitiesOnly=yes' \
             git remote add deploy git@github.com:AcosX/sub2api.git || true
 
       - name: Mirror new upstream release tags
@@ -105,7 +105,7 @@ jobs:
           printf '%s\n' "$to_push" > "$RUNNER_TEMP/mirrored-tags.txt"
           while IFS= read -r tag; do
             [ -n "$tag" ] || continue
-            GIT_SSH_COMMAND="ssh -i /root/.ssh/sync_deploy_key -o IdentitiesOnly=yes" \
+            GIT_SSH_COMMAND="ssh -i $HOME/.ssh/sync_deploy_key -o IdentitiesOnly=yes" \
             git push deploy "refs/tags/$tag:refs/tags/$tag"
           done < "$RUNNER_TEMP/mirrored-tags.txt"
           echo "pushed=$(grep -c . "$RUNNER_TEMP/mirrored-tags.txt")" >> "$GITHUB_OUTPUT"
