@@ -143,3 +143,4 @@ jobs:
             pushed=$((pushed + 1))
           done <<< "$tag_list"
           echo "pushed=$pushed" >> "$GITHUB_OUTPUT"
+
