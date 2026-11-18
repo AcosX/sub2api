@@ -69,7 +69,7 @@ jobs:
           mkdir -p "$HOME/.ssh"
           printf '%s\n' "$DEPLOY_KEY" > $HOME/.ssh/sync_deploy_key
           chmod 600 $HOME/.ssh/sync_deploy_key
-          ssh-keyscan github.com >> /root/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan github.com >> "$HOME/.ssh/known_hosts" 2>/dev/null
           GIT_SSH_COMMAND='ssh -i $HOME/.ssh/sync_deploy_key -o IdentitiesOnly=yes' \
             git remote add deploy git@github.com:AcosX/sub2api.git || true
 
